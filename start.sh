@@ -26,10 +26,11 @@ fi
 PS3="请选择(输入0退出): "
 install() {
   cd ${installpath}
-  if [ -d serv00-play ]; then
+  if [ -d "serv00-play" ]; then
     cd "serv00-play"
     git stash
-    if git pull; then
+    if git pull origin main; then
+      git fetch --tags
       echo "更新完毕"
       #重新给各个脚本赋权限
       chmod +x ./start.sh
@@ -38,6 +39,7 @@ install() {
       chmod +x ./wxsend.sh
       chmod +x ${installpath}/serv00-play/singbox/start.sh
       chmod +x ${installpath}/serv00-play/singbox/killsing-box.sh
+      chmod +x ${installpath}/serv00-play/singbox/autoUpdateHyIP.sh
       chmod +x ${installpath}/serv00-play/ssl/cronSSL.sh
       red "请重新启动脚本!"
       exit 0
@@ -66,6 +68,7 @@ install() {
   chmod +x ./wxsend.sh
   chmod +x ${installpath}/serv00-play/singbox/start.sh
   chmod +x ${installpath}/serv00-play/singbox/killsing-box.sh
+  chmod +x ${installpath}/serv00-play/singbox/autoUpdateHyIP.sh
   chmod +x ${installpath}/serv00-play/ssl/cronSSL.sh
   read -p "$(yellow 设置完毕,需要重新登录才能生效，是否重新登录？[y/n] [y]:)" input
   input=${input:-y}
@@ -93,7 +96,7 @@ showSingBoxInfo() {
 }
 
 chooseSingbox() {
-  echo "保活sing-box中哪个项目: "
+  echo "保活sing-box中哪个项目(单选): "
   echo " 1.hy2/vmess+ws/socks5 "
   echo " 2.argo+vmess "
   echo " 3.all "
@@ -137,6 +140,7 @@ createConfigFile() {
   echo "4. mtproto代理"
   echo "5. alist"
   echo "6. webssh"
+  echo "7. 哪吒面板"
   echo "88. 暂停所有保活功能"
   echo "99. 复通所有保活功能(之前有配置的情况下)"
   echo "0. 返回主菜单"
@@ -180,8 +184,11 @@ createConfigFile() {
     6)
       item+=("webssh")
       ;;
+    7)
+      item+=("nezha-dashboard")
+      ;;
     88)
-      delCron
+      #delCron
       backupConfig "config.json"
       green "设置完毕!"
       return 0
@@ -215,20 +222,6 @@ createConfigFile() {
   json_content="${json_content%,}\n"
   json_content+="   ],\n"
 
-  if [ "$num" = "4" ]; then
-    json_content+="   \"chktime\": \"null\""
-    json_content+="}\n"
-    printf "$json_content" >./config.json
-    echo -e "${YELLOW} 设置完成! ${RESET} "
-    delCron
-    return
-  fi
-
-  read -p "配置保活检查的时间间隔(单位分钟，默认5分钟):" tm
-  tm=${tm:-"5"}
-
-  json_content+="   \"chktime\": \"$tm\","
-
   read -p "是否需要配置消息推送? [y/n] [n]:" input
   input=${input:-n}
 
@@ -256,12 +249,24 @@ createConfigFile() {
   else
     sendtype=${sendtype:-"null"}
   fi
+
+  read -p "是否使用cron保活? [y/n] [n]:" setcron
+  setcron=${setcron:-n}
+
+  if [[ "$setcron" == "y" ]]; then
+    read -p "配置保活检查的时间间隔(单位分钟[1~59]，默认5分钟):" tm
+    tm=${tm:-"5"}
+    json_content+="   \"chktime\": \"$tm\","
+  fi
   json_content+="\n \"sendtype\": $sendtype \n"
   json_content+="}\n"
 
   # 使用 printf 生成文件
   printf "$json_content" >./config.json
-  addCron $tm
+  if [[ "$setcron" == "y" ]]; then
+    addCron $tm
+  fi
+
   chmod +x ${installpath}/serv00-play/keepalive.sh
   echo -e "${YELLOW} 设置完成! ${RESET} "
 
@@ -730,6 +735,7 @@ configSingBox() {
       if [[ -n "$hy2_ip" ]]; then
         green "选中未封ip为 $hy2_ip"
       else
+        hy2_ip=$(curl -s icanhazip.com)
         red "未能找到未封IP,保持默认值！"
       fi
       ;;
@@ -816,6 +822,7 @@ configSingBox() {
       if [[ -n "$hy2_ip" ]]; then
         green "选中未封ip为 $hy2_ip"
       else
+        hy2_ip=$(curl -s icanhazip.com)
         red "未能找到未封IP,保持默认值！"
       fi
       #配置socks5
@@ -917,55 +924,12 @@ EOF
 }
 
 startSingBox() {
-  cd ${installpath}/serv00-play/singbox
-
-  if [[ ! -e "singbox.json" ]]; then
-    red "请先进行配置!"
-    return 1
-  fi
-
-  # if [[ ! -e ${installpath}/serv00-play/singbox/serv00sb ]] || [[ ! -e ${installpath}/serv00-play/singbox/cloudflared ]]; then
-  #   read -p "请输入使用密码:" password
-  # fi
-
-  if ! checkDownload "serv00sb"; then
-    return
-  fi
-  if ! checkDownload "cloudflared"; then
-    return
-  fi
-
-  if checkSingboxAlive; then
-    red "sing-box 已在运行，请勿重复操作!"
-    return 1
-  else #启动可能需要cloudflare，此处表示cloudflare和sb有一个不在线，所以干脆先杀掉再重启。
-    chmod 755 ./killsing-box.sh
-    ./killsing-box.sh
-  fi
-
-  if chmod +x start.sh && ! ./start.sh; then
-    red "sing-box启动失败！"
-    exit 1
-  fi
-  sleep 1
-  if checkProcAlive "serv00sb"; then
-    yellow "启动成功!"
-  else
-    red "启动失败!"
-  fi
+  start_sing_box
 
 }
 
 stopSingBox() {
-  cd ${installpath}/serv00-play/singbox
-  if [ -f killsing-box.sh ]; then
-    chmod 755 ./killsing-box.sh
-    ./killsing-box.sh
-  else
-    echo "请先安装serv00-play!!!"
-    return
-  fi
-  echo "已停掉sing-box!"
+  stop_sing_box
 }
 
 killUserProc() {
@@ -1143,6 +1107,9 @@ InitServer() {
       rm -rf ~/* 2>/dev/null
     else
       rm -rf ~/* ~/.* 2>/dev/null
+      clean_all_domains
+      clean_all_dns
+      create_default_domain
     fi
     cleanPort
     yellow "初始化完毕"
@@ -1158,10 +1125,12 @@ manageNeZhaAgent() {
   while true; do
     yellow "-------------------------"
     echo "探针管理："
-    echo "1.安装探针"
-    echo "2.升级探针"
+    echo "服务状态: $(checkProcStatus nezha-agent)"
+    echo "1.安装探针(v0或v1)"
+    echo "2.升级探针(仅v1以上版本)"
     echo "3.启动/重启探针"
     echo "4.停止探针"
+    echo "5.卸载探针"
     echo "9.返回主菜单"
     echo "0.退出脚本"
     yellow "-------------------------"
@@ -1181,6 +1150,9 @@ manageNeZhaAgent() {
     4)
       stopNeZhaAgent
       ;;
+    5)
+      uninstallAgent
+      ;;
     9)
       break
       ;;
@@ -1195,132 +1167,58 @@ manageNeZhaAgent() {
   showMenu
 }
 
-updateAgent() {
-  red "暂不提供在线升级, 只适配哪吒面板v0版本系列。"
-  return 1
-  exepath="${installpath}/serv00-play/nezha/nezha-agent"
-  if [ ! -e "$exepath" ]; then
-    red "未安装探针，请先安装！！!"
-    return
-  fi
-
-  local workedir="${installpath}/serv00-play/nezha"
-  cd $workedir
-
-  local_version="v"$(./nezha-agent -v)
-  latest_version=$(curl -sL https://github.com/nezhahq/agent/releases/latest | sed -n 's/.*tag\/\(v[0-9.]*\).*/\1/p' | head -1)
-
-  if [[ "$local_version" != "$latest_version" ]]; then
-    echo "发现新版本: $latest_version，当前版本: $local_version。正在更新..."
-    download_url="https://github.com/nezhahq/agent/releases/download/$latest_version/nezha-agent_freebsd_amd64.zip"
-
-    local filezip="nezha-agent_latest.zip"
-    curl -sL -o "$filezip" "$download_url"
-    if [[ ! -e "$filezip" || -n $(file "$filezip" | grep "text") ]]; then
-      echo "下载探针文件失败!"
-      return
-    fi
-    local agent_runing=0
-    if checknezhaAgentAlive; then
-      stopNeZhaAgent
-      agent_runing=1
-    fi
-    unzip -o $filezip -d .
-    chmod +x ./nezha-agent
-    if [ $agent_runing -eq 1 ]; then
-      startAgent
-    fi
-    rm -rf $filezip
-    green "更新完成！新版本: $latest_version"
-  else
-    echo "已经是最新版本: $local_version"
-  fi
-  if [[ $agent_runing -eq 1 ]]; then
-    exit 0
-  fi
-}
-
-startAgent() {
-  local workedir="${installpath}/serv00-play/nezha"
-  if [ ! -e "${workedir}" ]; then
-    red "未安装探针，请先安装！！!"
-    return
-  fi
-  cd $workedir
-
-  local configfile="./nezha.json"
-  if [ ! -e "$configfile" ]; then
-    red "未安装探针，请先安装！！!"
-    return
-  fi
-
-  nezha_domain=$(jq -r ".nezha_domain" $configfile)
-  nezha_port=$(jq -r ".nezha_port" $configfile)
-  nezha_pwd=$(jq -r ".nezha_pwd" $configfile)
-  tls=$(jq -r ".tls" $configfile)
-
-  if checknezhaAgentAlive; then
-    stopNeZhaAgent
-  fi
-
-  local args="--report-delay 4 --disable-auto-update --disable-force-update "
-  if [[ "$tls" == "y" ]]; then
-    args="${args} --tls "
-  fi
-
-  #echo "./nezha-agent ${args} -s ${nezha_domain}:${nezha_port} -p ${nezha_pwd}"
-  nohup ./nezha-agent ${args} -s ${nezha_domain}:${nezha_port} -p ${nezha_pwd} >/dev/null 2>&1 &
-
-  if checknezhaAgentAlive; then
-    green "启动成功!"
-  else
-    red "启动失败!"
-  fi
-  #即便使用nohup放后台，此处如果使用ctrl+c退出脚本，nezha-agent进程也会退出。非常奇葩，因此startAgent后只能exit退出脚本，避免用户使用ctrl+c退出。
-
-}
-
 installNeZhaAgent() {
   local workedir="${installpath}/serv00-play/nezha"
   if [ ! -e "${workedir}" ]; then
     mkdir -p "${workedir}"
   fi
+
   cd ${workedir}
-  if [[ ! -e nezha-agent ]]; then
-    echo "正在下载哪吒探针..."
-    local url="https://github.com/nezhahq/agent/releases/download/v0.20.3/nezha-agent_freebsd_amd64.zip"
+  if [ -e nezha-agent ]; then
+    red "探针已安装,重新安装请先卸载!"
+    return 1
+  fi
+  echo "确认安装哪吒探针的版本:"
+  echo "1. v0.20.5"
+  echo "2. v1 -latest"
+  read -p "请选择:" ver
+  if [[ "$ver" != "1" && "$ver" != "2" ]]; then
+    echo "无效输入!"
+    return 1
+  fi
+
+  echo "正在下载哪吒探针..."
+  if [[ "$ver" == "1" ]]; then
+    # 安装v0版本
+    local url="https://github.com/nezhahq/agent/releases/download/v0.20.5/nezha-agent_freebsd_amd64.zip"
     agentZip="nezha-agent.zip"
     if ! wget -qO "$agentZip" "$url"; then
       red "下载哪吒探针失败"
       return 1
     fi
     unzip $agentZip >/dev/null 2>&1
-    chmod +x ./nezha-agent
-    green "下载完毕"
+  else
+    latest_version=$(curl -sL https://github.com/nezhahq/agent/releases/latest | sed -n 's/.*tag\/\(v[0-9.]*\).*/\1/p' | head -1)
+    download_url="https://github.com/nezhahq/agent/releases/download/$latest_version/nezha-agent_freebsd_amd64.zip"
+    local filezip="nezha-agent_latest.zip"
+    curl -sL -o "$filezip" "$download_url"
+    if [[ ! -e "$filezip" || -n $(file "$filezip" | grep "text") ]]; then
+      echo "下载探针文件失败!"
+      return
+    fi
+    unzip -o $filezip -d .
   fi
+  chmod +x ./nezha-agent
+  green "下载完毕"
 
   local config="nezha.json"
-  local input="y"
-  if [[ -e "$config" ]]; then
-    echo "哪吒探针配置如下:"
-    cat "$config"
-    read -p "是否修改？ [y/n] [n]:" input
-    input=${input:-n}
-  fi
 
-  if [[ "$input" == "y" ]]; then
-    read -p "请输入哪吒面板的域名或ip:" nezha_domain
-    read -p "请输入哪吒面板RPC端口(默认 5555):" nezha_port
-    nezha_port=${nezha_port:-5555}
-    read -p "请输入服务器密钥(从哪吒面板中获取):" nezha_pwd
-    read -p "是否启用针对 gRPC 端口的 SSL/TLS加密 (--tls)，需要请按 [y]，默认是不需要，不理解用户可回车跳过: " tls
-    tls=${tls:-"N"}
-  else
-    nezha_domain=$(jq -r ".nezha_domain" $config)
-    nezha_port=$(jq -r ".nezha_port" $config)
-    nezha_pwd=$(jq -r ".nezha_pwd" $config)
-    tls=$(jq -r ".tls" $config)
-  fi
+  read -p "请输入哪吒面板的域名或ip:" nezha_domain
+  read -p "请输入哪吒面板RPC端口(默认 5555):" nezha_port
+  nezha_port=${nezha_port:-5555}
+  read -p "请输入服务器密钥(从哪吒面板中获取):" nezha_pwd
+  read -p "是否启用针对 gRPC 端口的 SSL/TLS加密 (--tls)，需要请按 [y]，默认是不需要，不理解用户可回车跳过: " tls
+  tls=${tls:-"N"}
 
   if [[ -z "$nezha_domain" || -z "$nezha_port" || -z "$nezha_pwd" ]]; then
     red "以上参数都不能为空！"
@@ -1332,8 +1230,38 @@ installNeZhaAgent() {
       "nezha_domain": "$nezha_domain",
       "nezha_port": "$nezha_port",
       "nezha_pwd": "$nezha_pwd",
-      "tls": "$tls"
+      "tls": "$tls",
+      "version": "$ver"
     }
+EOF
+  local uuid=$(uuidgen -r)
+  local yamlcfg="config.yaml"
+  local datatls=""
+  if [[ "$tls" == "y" ]]; then
+    datatls="tls: true"
+  else
+    datatls="tls: false"
+  fi
+  cat >$yamlcfg <<EOF
+    client_secret: $nezha_pwd
+    debug: false
+    disable_auto_update: false
+    disable_command_execute: false
+    disable_force_update: false
+    disable_nat: false
+    disable_send_query: false
+    gpu: false
+    insecure_tls: false
+    ip_report_period: 1800
+    report_delay: 2
+    server: $nezha_domain:$nezha_port
+    skip_connection_count: false
+    skip_procs_count: false
+    temperature: false
+    $datatls
+    use_gitee_to_upgrade: false
+    use_ipv6_country_code: false
+    uuid: $uuid
 EOF
 
   local args="--report-delay 4 --disable-auto-update --disable-force-update "
@@ -1345,8 +1273,85 @@ EOF
     stopNeZhaAgent
   fi
 
-  nohup ./nezha-agent ${args} -s "${nezha_domain}:${nezha_port}" -p "${nezha_pwd}" >/dev/null 2>&1 &
+  if [[ "$ver" == "1" ]]; then
+    nohup ./nezha-agent ${args} -s "${nezha_domain}:${nezha_port}" -p "${nezha_pwd}" >/dev/null 2>&1 &
+  else
+    nohup ./nezha-agent -c $yamlcfg >/dev/null 2>&1 &
+  fi
   green "哪吒探针成功启动!"
+
+}
+
+updateAgent() {
+  exepath="${installpath}/serv00-play/nezha/nezha-agent"
+  if [ ! -e "$exepath" ]; then
+    red "未安装探针，请先安装！！!"
+    return
+  fi
+
+  cd ${installpath}/serv00-play/nezha
+
+  if ! check_update_from_net "nezha-agent"; then
+    return 1
+  fi
+
+  stopNeZhaAgent
+  download_from_net "nezha-agent"
+  if [[ -e "nezha-agent" ]]; then
+    chmod +x ./nezha-agent
+  else
+    red "下载失败!"
+    return
+  fi
+  startNeZhaAgent
+  green "更新完毕!"
+
+  return
+
+}
+
+startAgent() {
+  local exepath="${installpath}/serv00-play/nezha/nezha-agent"
+  if [ ! -e "${exepath}" ]; then
+    red "未安装探针，请先安装！！!"
+    return
+  fi
+  cd "${installpath}/serv00-play/nezha"
+
+  local configfile="./nezha.json"
+  if [ ! -e "$configfile" ]; then
+    red "未安装探针，请先安装！！!"
+    return
+  fi
+
+  nezha_domain=$(jq -r ".nezha_domain" $configfile)
+  nezha_port=$(jq -r ".nezha_port" $configfile)
+  nezha_pwd=$(jq -r ".nezha_pwd" $configfile)
+  ver=$(jq -r ".version" $configfile)
+  tls=$(jq -r ".tls" $configfile)
+
+  if checknezhaAgentAlive; then
+    stopNeZhaAgent
+  fi
+
+  local args="--report-delay 4 --disable-auto-update --disable-force-update "
+  if [[ "$tls" == "y" ]]; then
+    args="${args} --tls "
+  fi
+
+  if [[ "$ver" == "1" ]]; then
+    #echo "./nezha-agent ${args} -s ${nezha_domain}:${nezha_port} -p ${nezha_pwd}"
+    nohup ./nezha-agent ${args} -s ${nezha_domain}:${nezha_port} -p ${nezha_pwd} >/dev/null 2>&1 &
+  else
+    nohup ./nezha-agent -c config.yaml 2>&1 &
+  fi
+
+  if checknezhaAgentAlive; then
+    green "启动成功!"
+  else
+    red "启动失败!"
+  fi
+  #即便使用nohup放后台，此处如果使用ctrl+c退出脚本，nezha-agent进程也会退出。非常奇葩，因此startAgent后只能exit退出脚本，避免用户使用ctrl+c退出。
 
 }
 
@@ -1363,6 +1368,196 @@ uninstallAgent() {
     green "卸载完毕!"
   fi
 
+}
+manageNeZhaBoard() {
+  if ! checkInstalled "serv00-play"; then
+    return 1
+  fi
+  while true; do
+    yellow "---------------------"
+    echo "哪吒面板管理(仅支持v1):"
+    echo "服务状态: $(checkProcStatus nezha-dashboard)"
+    echo "1. 安装"
+    echo "2. 启动"
+    echo "3. 停止"
+    echo "4. 更新"
+    echo "8. 卸载"
+    echo "9. 返回主菜单"
+    echo "0. 退出脚本"
+    yellow "---------------------"
+    read -p "请选择:" input
+
+    case $input in
+    1)
+      installNeZhaDashboard
+      ;;
+    2)
+      startNeZhaDashboard
+      ;;
+    3)
+      stopNeZhaDashboard
+      ;;
+    4)
+      updateNeZhaDashboard
+      ;;
+    8)
+      uninstallNeZhaDashboard
+      ;;
+    9)
+      break
+      ;;
+    0)
+      exit 0
+      ;;
+    *)
+      echo "无效选项，请重试"
+      ;;
+    esac
+  done
+  showMenu
+}
+
+installNeZhaDashboard() {
+  local workedir="${installpath}/serv00-play/nezha-board"
+  if [ ! -e "${workedir}" ]; then
+    mkdir -p "${workedir}"
+  fi
+
+  cd ${workedir}
+  if [ -e "./nezha-dashboard" ]; then
+    red "面板已安装,重新安装请先卸载!"
+    return 1
+  fi
+  if ! download_from_net "nezha-dashboard"; then
+    return 1
+  fi
+  if [[ -e "dashboard" ]]; then
+    mv ./dashboard ./nezha-dashboard
+    chmod +x ./nezha-dashboard
+  else
+    red "下载失败!"
+    return 1
+  fi
+
+  #自动分配端口
+  loadPort
+  randomPort tcp nezha-dashboard
+  if [[ -n "$port" ]]; then
+    nz_port="$port"
+  else
+    red "未输入端口号"
+    return 1
+  fi
+  read -p "请输入站点标题: " nz_site_title
+  echo "请指定后台语言"
+  echo "1. 中文（简体）"
+  echo "2. 中文（繁体）"
+  echo "3. English"
+  while true; do
+    read -p "请输入选项 [1-3]" option
+    case "${option}" in
+    1)
+      nz_lang=zh_CN
+      break
+      ;;
+    2)
+      nz_lang=zh_TW
+      break
+      ;;
+    3)
+      nz_lang=en_US
+      break
+      ;;
+    *)
+      echo "请输入正确的选项 [1-3]"
+      ;;
+    esac
+  done
+  echo "正在安装哪吒面板，请等待..."
+  domain=""
+  webIp=""
+  if ! makeWWW "" $nz_port; then
+    echo "绑定域名失败!"
+    return 1
+  fi
+  if ! applyLE $domain $webIp; then
+    echo "申请证书失败!"
+    return 1
+  fi
+  cd ${workedir}
+  nz_hostport="${domain}:${nz_port}"
+  #serv00不支持gprc转发，所以不需要tls
+
+  cat >config.yaml <<EOF
+  debug: false
+  listen_port: $nz_port
+  language: $nz_lang
+  site_name: "$nz_site_title"
+  install_host: $nz_hostport
+  tls: false
+EOF
+
+  mkdir ./data
+  green "面板安装成功!"
+}
+startNeZhaDashboard() {
+  if [ ! -e "${installpath}/serv00-play/nezha-board/nezha-dashboard" ]; then
+    red "未安装面板，请先安装！！!"
+    return
+  fi
+  cd ${installpath}/serv00-play/nezha-board
+  if checkProcAlive nezha-dashboard; then
+    stopNeZhaDashboard
+  fi
+  if [ ! -e "config.yaml" ]; then
+    red "未安装面板，请先安装！！!"
+    return
+  fi
+  nohup ./nezha-dashboard -c config.yaml >borad.log 2>&1 &
+  if checkProcAlive nezha-dashboard; then
+    green "面板已启动!"
+  else
+    red "面板启动失败,请查看日志borad.log"
+  fi
+
+}
+stopNeZhaDashboard() {
+  if checkProcAlive nezha-dashboard; then
+    stopProc nezha-dashboard
+  else
+    red "面板未启动!"
+  fi
+}
+updateNeZhaDashboard() {
+  if [ ! -e "${installpath}/serv00-play/nezha-board/nezha-dashboard" ]; then
+    red "未安装面板，请先安装！！!"
+    return
+  fi
+  cd ${installpath}/serv00-play/nezha-board
+
+  if ! check_update_from_net "nezha-dashboard"; then
+    return 1
+  fi
+
+  stopNeZhaDashboard
+  download_from_net "nezha-dashboard"
+  if [[ -e "dashboard" ]]; then
+    mv -f ./dashboard ./nezha-dashboard
+    chmod +x ./nezha-dashboard
+  fi
+  startNeZhaDashboard
+  green "更新完毕!"
+
+  return
+}
+
+uninstallNeZhaDashboard() {
+  local workedir="${installpath}/serv00-play/nezha-board"
+  if [ ! -e "${workedir}" ]; then
+    red "未安装面板!"
+    return
+  fi
+  uninstallProc $workedir "nezha-dashboard"
 }
 
 setCnTimeZone() {
@@ -1492,7 +1687,7 @@ installMtg() {
   #自动生成密钥
   head=$(hostname | cut -d '.' -f 1)
   no=${head#s}
-  host="panel${no}.serv00.com"
+  host="panel${no}.$(getDoMain)"
   secret=$(./mtg generate-secret --hex $host)
   loadPort
   randomPort tcp mtg
@@ -1547,7 +1742,7 @@ startMtg() {
   eval "$cmd"
   sleep 3
   if checkMtgAlive; then
-    mtproto="https://t.me/proxy?server=${host}.serv00.com&port=${port}&secret=${secret}"
+    mtproto="https://t.me/proxy?server=${host}.$(getDoMain)&port=${port}&secret=${secret}"
     echo "$mtproto"
     green "启动成功"
   else
@@ -1662,8 +1857,7 @@ installAlist() {
   else
     cd "alist" || return 1
     if [ ! -e "alist" ]; then
-      # read -p "请输入使用密码:" password
-      if ! checkDownload "alist"; then
+      if ! download_from_net "alist"; then
         return 1
       fi
     fi
@@ -1774,6 +1968,20 @@ resetAdminPass() {
   extract_user_and_password "$output"
 }
 
+updateAlist() {
+  cd ${installpath}/serv00-play/alist || (echo "未安装alist" && return)
+
+  if ! check_update_from_net "alist"; then
+    return 1
+  fi
+
+  stopAlist
+  download_from_net "alist"
+  chmod +x ./alist
+  startAlist
+  echo "更新完毕!"
+}
+
 alistServ() {
   if ! checkInstalled "serv00-play"; then
     return 1
@@ -1782,11 +1990,12 @@ alistServ() {
     yellow "----------------------"
     echo "alist:"
     echo "服务状态: $(checkProcStatus alist)"
-    echo "1. 安装部署alist "
-    echo "2. 启动alist"
-    echo "3. 停掉alist"
+    echo "1. 安装部署"
+    echo "2. 启动"
+    echo "3. 停掉"
     echo "4. 重置admin密码"
-    echo "8. 卸载alist"
+    echo "5. 更新"
+    echo "8. 卸载"
     echo "9. 返回主菜单"
     echo "0. 退出脚本"
     yellow "----------------------"
@@ -1804,6 +2013,9 @@ alistServ() {
       ;;
     4)
       resetAdminPass
+      ;;
+    5)
+      updateAlist
       ;;
     8)
       uninstallAlist
@@ -1863,18 +2075,18 @@ printIndexPorts() {
 
 delPortMenu() {
   loadIndexPorts
-
-  if [[ ${#indexPorts[@]} -gt 0 ]]; then
+  local portNum=${#indexPorts[@]}
+  if [[ ${portNum} -gt 0 ]]; then
     printIndexPorts
-    read -p "请选择要删除的端口记录编号(输入0删除所有端口记录, 回车返回):" number
+    read -p "请选择要删除的端口记录编号(输入-1删除所有端口记录, 回车返回):" number
     number=${number:-99}
 
     if [[ $number -eq 99 ]]; then
       return
-    elif [[ $number -gt 3 || $number -lt 0 ]]; then
+    elif [[ $number -gt $portNum || $number -lt -1 || $number -eq 0 ]]; then
       echo "非法输入!"
       return
-    elif [[ $number -eq 0 ]]; then
+    elif [[ $number -eq -1 ]]; then
       cleanPort
     else
       idx=$((number - 1))
@@ -1906,12 +2118,29 @@ addPortMenu() {
   fi
   loadPort
   read -p "请输入端口备注(如hy2，vmess，用于脚本自动获取端口):" opts
-  local port=$(getPort $type $opts)
-  if [[ "$port" == "failed" ]]; then
-    red "分配端口失败,请重新操作!"
+  read -p "是否自动分配端口? [y/n] [y]:" input
+  input=${input:-y}
+  if [[ "$input" == "y" ]]; then
+    port=$(getPort $type $opts)
+    if [[ "$port" == "failed" ]]; then
+      red "分配端口失败,请重新操作!"
+    else
+      green "分配出来的端口是:$port"
+    fi
   else
-    green "分配出来的端口是:$port"
+    read -p "请输入端口号:" port
+    if [[ -z "$port" ]]; then
+      red "端口不能为空"
+      return 1
+    fi
+    resp=$(devil port add $type $port $opts)
+    if [[ "$resp" =~ .*succesfully.*$ || "$resp" =~ .*Ok.*$ ]]; then
+      green "添加端口成功!"
+    else
+      red "添加端口失败!"
+    fi
   fi
+
 }
 
 portServ() {
@@ -2237,29 +2466,12 @@ rootServ() {
   showMenu
 }
 
-getUnblockIP() {
-  local hostname=$(hostname)
-  local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
-  local hosts=("cache${host_number}.serv00.com" "web${host_number}.serv00.com" "$hostname")
-
+showIPStatus() {
   yellow "----------------------------------------------"
   green "  主机名称          |      IP        |  状态"
   yellow "----------------------------------------------"
-  # 遍历主机名称数组
-  for host in "${hosts[@]}"; do
-    # 获取 API 返回的数据
-    local response=$(curl -s "https://ss.botai.us.kg/api/getip?host=$host")
 
-    # 检查返回的结果是否包含 "not found"
-    if [[ "$response" =~ "not found" ]]; then
-      echo "未识别主机${host}, 请联系作者饭奇骏!"
-      return
-    fi
-    local ip=$(echo "$response" | awk -F "|" '{print $1 }')
-    local status=$(echo "$response" | awk -F "|" '{print $2 }')
-    printf "%-20s | %-15s | %-10s\n" "$host" "$ip" "$status"
-  done
-
+  show_ip_status
 }
 
 checkProcStatus() {
@@ -2284,6 +2496,7 @@ sunPanelServ() {
     echo "2. 启动"
     echo "3. 停止"
     echo "4. 初始化密码"
+    echo "5. 导入serv00账号信息(频道会员尊享功能)"
     echo "8. 卸载"
     echo "9. 返回主菜单"
     echo "0. 退出脚本"
@@ -2303,6 +2516,9 @@ sunPanelServ() {
     4)
       resetSunPanelPwd
       ;;
+    5)
+      import_accounts
+      ;;
     8)
       uninstallSunPanel
       ;;
@@ -2318,6 +2534,54 @@ sunPanelServ() {
     esac
   done
   showMenu
+}
+
+import_accounts() {
+  local workdir="${installpath}/serv00-play/sunpanel"
+  if ! vip_statement; then
+    return 1
+  fi
+
+  cd $workdir
+  read -p "请输入会员密码:" passwd
+  if ! checkDownload "importd_panel_accounts.sh" 0 "$passwd" 1; then
+    return 1
+  fi
+
+  chmod +x ./importd_panel_accounts.sh
+
+  ./importd_panel_accounts.sh && rm -rf ./importd_panel_accounts.sh
+
+  if [[ $? -ne 0 ]]; then
+    echo "导入失败!"
+  else
+    echo "导入成功!"
+  fi
+
+}
+
+import_accounts() {
+  local workdir="${installpath}/serv00-play/sunpanel"
+  if ! vip_statement; then
+    return 1
+  fi
+
+  cd $workdir
+  read -s -p "请输入会员密码:" passwd
+  if ! checkDownload "importd_panel_accounts.sh" 0 "$passwd" 1; then
+    return 1
+  fi
+
+  chmod +x ./importd_panel_accounts.sh
+
+  ./importd_panel_accounts.sh && rm -rf ./importd_panel_accounts.sh
+
+  if [[ $? -ne 0 ]]; then
+    echo "导入失败!"
+  else
+    echo "导入成功!"
+  fi
+
 }
 
 uninstallSunPanel() {
@@ -2423,6 +2687,9 @@ makeWWW() {
   is_self_domain=0
   webIp=$(get_webip)
   default_webip=$(get_default_webip)
+  if [[ -z "$webIp" ]]; then
+    webIp=$default_webip
+  fi
   green "可用webip是: $webIp, 默认webip是: $default_webip"
   read -p "是否使用自定义域名? [y/n] [n]:" input
   input=${input:-n}
@@ -2430,12 +2697,10 @@ makeWWW() {
     is_self_domain=1
     read -p "请输入域名(确保此前域名已指向webip):" domain
   else
-    user="$(whoami)"
-    if isServ00; then
-      domain="${proc}.$user.serv00.net"
-    else
-      domain="$proc.$user.ct8.pl"
+    if [[ -z ${proc:""} ]]; then
+      read -p "请输入默认域名的二级域名的前缀(如二级域名 sub.main.com， 则填sub):" proc
     fi
+    domain=$(getUserDoMain "$proc")
   fi
 
   if [[ -z "$domain" ]]; then
@@ -2576,7 +2841,7 @@ installBurnReading() {
   domainPath="$installpath/domains/$domain/public_html"
   cd $domainPath
   echo "正在下载并安装 OneTimeMessagePHP ..."
-  if ! download_from_github_release frankiejun OneTimeMessagePHP OneTimeMessagePHP; then
+  if ! download_from_github_release fkj-src OneTimeMessagePHP OneTimeMessagePHP.zip; then
     red "下载失败!"
     return 1
   fi
@@ -2612,6 +2877,19 @@ uninstallBurnReading() {
   cd $workdir
 
   if ! check_domains_empty; then
+    echo "目前已安装服务的域名有:"
+    print_domains
+    read -p "是否删除所有域名服务? [y/n] [n]:" input
+    input=${input:-n}
+    if [[ "$input" == "y" ]]; then
+      delete_all_domains
+      rm -rf "${installpath}/serv00-play/burnreading"
+    else
+      read -p "请输入要删除的服务的域名:" domain
+      delete_domain "$domain"
+    fi
+  else
+    echo "没有可卸载服务!"
     echo "目前已安装服务的域名有:"
     print_domains
   fi
@@ -2776,7 +3054,7 @@ startWebSSH() {
     stopProc "wssh"
   fi
   echo "正在启动中..."
-  cmd="nohup ./wssh --port=$port --fbidhttp=False --xheaders=False --encoding='utf-8' --delay=10  $args &"
+  cmd="nohup ./wssh --port=$port --wpintvl=30 --fbidhttp=False --xheaders=False --encoding='utf-8' --delay=10  $args &"
   eval "$cmd"
   sleep 2
   if checkProcAlive wssh; then
@@ -2816,36 +3094,325 @@ checkInstalled() {
 }
 
 changeHy2IP() {
+  cd ${installpath}/serv00-play/singbox
+  if [[ ! -e "singbox.json" || ! -e "config.json" ]]; then
+    red "未安装节点，请先安装!"
+    return 1
+  fi
+  showIPStatus
   read -p "是否让程序为HY2选择可用的IP？[y/n] [y]:" input
   input=${input:-y}
 
-  if [[ "$input" == "y" ]]; then
-    cd ${installpath}/serv00-play/singbox
-    if [[ ! -e "singbox.json" || ! -e "config.json" ]]; then
-      red "未安装节点，请先安装!"
+  if [[ "$input" == "n" ]]; then
+    read -p "是否手动选择IP？[y/n] [y]:" choose
+    choose=${choose:-y}
+    if [[ "$choose" == "y" ]]; then
+      read -p "请选择你要的IP的序号:" num
+      if [[ -z "$num" ]]; then
+        red "选择不能为空!"
+        return 1
+      fi
+      if [[ $num -lt 1 || $num -gt ${#localIPs[@]} ]]; then
+        echo "错误：num 的值非法！请输入 1 到 ${#localIPs[@]} 之间的整数。"
+        return 1
+      fi
+      hy2_ip=${localIPs[$((num - 1))]}
+    else
       return 1
     fi
+  else
     hy2_ip=$(get_ip)
-    if [[ -z "hy2_ip" ]]; then
-      red "很遗憾，已无可用IP!"
-      return 1
-    fi
-    if ! upInsertFd singbox.json HY2IP "$hy2_ip"; then
-      red "更新singbox.json配置文件失败!"
-      return 1
-    fi
-
-    if ! upSingboxFd config.json "inbounds" "tag" "hysteria-in" "listen" "$hy2_ip"; then
-      red "更新config.json配置文件失败!"
-      return 1
-    fi
-    green "HY2 更换IP成功，当前IP为 $hy2_ip"
-
-    echo "正在重启sing-box..."
-    stopSingBox
-    startSingBox
   fi
 
+  if [[ -z "$hy2_ip" ]]; then
+    red "很遗憾，已无可用IP!"
+    return 1
+  fi
+  if ! upInsertFd singbox.json HY2IP "$hy2_ip"; then
+    red "更新singbox.json配置文件失败!"
+    return 1
+  fi
+
+  if ! upSingboxFd config.json "inbounds" "tag" "hysteria-in" "listen" "$hy2_ip"; then
+    red "更新config.json配置文件失败!"
+    return 1
+  fi
+  green "HY2 更换IP成功，当前IP为 $hy2_ip"
+
+  echo "正在重启sing-box..."
+  stopSingBox
+  startSingBox
+
+}
+
+linkAliveServ() {
+  workdir="${installpath}/serv00-play/linkalive"
+  if ! checkInstalled "serv00-play"; then
+    return 1
+  fi
+  if ! vip_statement "linkAliveStatment"; then
+    return 1
+  fi
+
+  if [[ ! -e $workdir ]]; then
+    mkdir -p $workdir
+  fi
+  cd $workdir
+
+  read -s -p "请输入会员密码:" passwd
+  #判断密码是否为空
+  if [[ -z "$passwd" ]]; then
+    red "密码不能为空!"
+    return 1
+  fi
+  if ! checkDownload "linkAlive.sh" $ISFILE "$passwd" $ISVIP; then
+    return 1
+  fi
+
+  chmod +x ./linkAlive.sh
+  ./linkAlive.sh "$passwd"
+
+  #showMenu
+}
+
+keepAliveServ() {
+  if ! checkInstalled "serv00-play"; then
+    return 1
+  fi
+  while true; do
+    yellow "---------------------"
+    echo "keepAlive:"
+    echo "1. 安装"
+    echo "2. 更新(须先按1更新serv00-play)"
+    echo "3. 更新保活时间间隔"
+    echo "4. 修改token"
+    echo "8. 卸载"
+    echo "9. 返回主菜单"
+    echo "0. 退出脚本"
+    yellow "---------------------"
+    read -p "请选择:" input
+
+    case $input in
+    1)
+      installkeepAlive
+      ;;
+    2)
+      updatekeepAlive
+      ;;
+    3)
+      setKeepAliveInterval
+      ;;
+    4)
+      changeKeepAliveToken
+      ;;
+    8)
+      uninstallkeepAlive
+      ;;
+    9)
+      break
+      ;;
+    0)
+      exit 0
+      ;;
+    *)
+      echo "无效选项，请重试"
+      ;;
+    esac
+  done
+
+  showMenu
+}
+
+installkeepAlive() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  local domainPath="${installpath}/domains/$domain/public_nodejs"
+  local workdir="${installpath}/serv00-play/keepalive"
+  if [[ -e "$domainPath/config.json" ]]; then
+    red "已安装,请勿重复安装!"
+    return 1
+  fi
+  cd $workdir
+
+  read -p "需要使用默认域名[$domain]进行安装，若继续安装将会删除默认域名，确认是否继续? [y/n] [y]:" input
+  input=${input:-y}
+  if [[ "$input" != "y" ]]; then
+    echo "取消安装"
+    return 1
+  fi
+  delDefaultDomain
+  echo "正在安装..."
+  if ! createDefaultDomain; then
+    return 1
+  fi
+  mv "$domainPath/public" "$domainPath/static"
+  cp ./nezha.jpg $domainPath/static
+  cp ./config.json $domainPath
+  cp ./app.js $domainPath
+
+  cd $domainPath
+  if ! npm22 install express body-parser child_process fs; then
+    red "安装依赖失败"
+    return 1
+  fi
+
+  read -p "是否需要自定义token? [y/n] [y]:" input
+  input=${input:-y}
+  if [[ "$input" == "y" ]]; then
+    uuid=""
+    read -p "请输入token:" uuid
+    if [[ -z "$uuid" ]]; then
+      red "token不能为空!"
+      return 1
+    fi
+  else
+    uuid=$(uuidgen)
+  fi
+  green "你的token是:$uuid"
+  sed -i '' "s/uuid/$uuid/g" config.json
+  read -p "输入保活时间间隔(单位:分钟)[默认:2分钟]:" interval
+  interval=${interval:-2}
+  sed -i '' "s/TM/$interval/g" config.json
+
+  green "安装成功"
+
+}
+
+uninstallkeepAlive() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  local domainPath="${installpath}/domains/$domain/public_nodejs"
+  read -p "是否卸载? [y/n] [n]:" input
+  input=${input:-n}
+  if [[ "$input" != "y" ]]; then
+    return 1
+  fi
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  if ! delDefaultDomain; then
+    return 1
+  fi
+  green "卸载成功"
+}
+
+createDefaultDomain() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  rt=$(devil www add $domain nodejs /usr/local/bin/node22 production)
+  if [[ ! "$rt" =~ .*succesfully*$ ]]; then
+    red "创建默认域名失败"
+    return 1
+  fi
+}
+
+delDefaultDomain() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  rt=$(devil www del $domain --remove)
+  if [[ ! "$rt" =~ .*deleted*$ ]]; then
+    red "删除默认域名失败"
+    return 1
+  fi
+}
+
+updatekeepAlive() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  workDir="$installpath/serv00-play/keepalive"
+  if [[ ! -e "$domainPath/config.json" ]]; then
+    red "未安装,请先安装!"
+    return 1
+  fi
+  if [[ ! -e "$workDir" ]]; then
+    mkdir -p $workDir
+  fi
+  cd $workDir
+
+  cp ./app.js $domainPath
+
+  cp $workDir/app.js $domainPath
+  devil www restart $domain
+  green "更新成功"
+}
+
+changeKeepAliveToken() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  if [[ ! -e "$domainPath/config.json" ]]; then
+    red "未安装,请先安装!"
+    return 1
+  fi
+
+  cur_token=$(jq -r ".token" $domainPath/config.json)
+  echo "当前token为: $cur_token"
+  token=""
+  read -p "输入新的token:" token
+  if [[ -z "$token" ]]; then
+    red "token不能为空!"
+    return 1
+  fi
+  upInsertFd $domainPath/config.json token $token
+  if [ $? -ne 0 ]; then
+    red "更新失败!"
+    return 1
+  fi
+  green "更新成功"
+}
+
+setKeepAliveInterval() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  if [[ ! -e "$domainPath/config.json" ]]; then
+    red "未安装,请先安装!"
+    return 1
+  fi
+
+  cur_interval=$(jq -r ".interval" $domainPath/config.json)
+  echo "当前保活时间间隔为: $cur_interval 分钟"
+  read -p "输入保活时间间隔(单位:分钟)[默认:2分钟]:" interval
+  interval=${interval:-2}
+  upInsertFd $domainPath/config.json interval $interval
+  if [ $? -ne 0 ]; then
+    red "更新失败!"
+    return 1
+  fi
+  green "更新成功"
+}
+
+linkAliveStatment() {
+  cat <<EOF
+     全新的保活方式，无需借助cron，也不需要第三方平台(github/青龙/vps等登录方式)进行保活。 
+  在使用代理客户端的同时自动保活，全程无感！
+EOF
+}
+
+vip_statement() {
+  statement=$1
+  echo "此功能为会员尊享功能，欢迎加入饭奇骏频道会员: https://www.youtube.com/channel/UCjS3UKSmQ2mvsThXhJIFobA/join  "
+  $statement
+  read -p "你是否会员? [y/n] [n]:" input
+  input=${input:-n}
+
+  if [[ "$input" == "n" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+getLatestVer() {
+  ver=$(git ls-remote --tags https://github.com/frankiejun/serv00-play.git | awk -F/ '{print $3}' | sort -V | tail -n 1)
+  echo $ver
+}
+getCurrentVer() {
+  ver=$(git describe --tags --abbrev=0 2>/dev/null)
+  if [ $? -ne 0 ]; then
+    echo null
+  else
+    echo $ver
+  fi
 }
 
 showMenu() {
@@ -2854,12 +3421,13 @@ showMenu() {
   echo -e "${CYAN}${art_wrod}${RESET}"
   echo -e "${GREEN} 饭奇骏频道:https://www.youtube.com/@frankiejun8965 ${RESET}"
   echo -e "${GREEN} TG交流群:https://t.me/fanyousuiqun ${RESET}"
+  echo -e "${GREEN} 当前版本号:$(getCurrentVer) 最新版本号:$(getLatestVer) ${RESET}"
   echo "<------------------------------------------------------------------>"
   echo "请选择一个选项:"
 
-  options=("安装/更新serv00-play项目" "sun-panel" "webssh" "阅后即焚" "待开发" "设置保活的项目" "配置sing-box"
-    "运行sing-box" "停止sing-box" "显示sing-box节点信息" "快照恢复" "系统初始化" "前置工作及设置中国时区" "管理哪吒探针" "卸载探针" "设置彩色开机字样" "显示本机IP"
-    "mtproto代理" "alist管理" "端口管理" "域名证书管理" "一键root" "自动检测主机IP状态" "一键更换hy2的IP" "卸载")
+  options=("安装/更新serv00-play项目" "sun-panel" "webssh" "阅后即焚" "linkalive" "设置保活的项目" "配置sing-box"
+    "运行sing-box" "停止sing-box" "显示sing-box节点信息" "快照恢复" "系统初始化" "前置工作及设置中国时区" "哪吒探针管理" "哪吒面板管理" "设置彩色开机字样" "显示本机IP"
+    "mtproto代理" "alist管理" "端口管理" "域名证书管理" "一键root" "自动检测主机IP状态" "一键更换hy2的IP" "KeepAlive" "卸载")
 
   select opt in "${options[@]}"; do
     case $REPLY in
@@ -2876,7 +3444,7 @@ showMenu() {
       burnAfterReadingServ
       ;;
     5)
-      nonServ
+      linkAliveServ
       ;;
     6)
       setConfig
@@ -2906,7 +3474,7 @@ showMenu() {
       manageNeZhaAgent
       ;;
     15)
-      uninstallAgent
+      manageNeZhaBoard
       ;;
     16)
       setColorWord
@@ -2930,12 +3498,15 @@ showMenu() {
       rootServ
       ;;
     23)
-      getUnblockIP
+      showIPStatus
       ;;
     24)
       changeHy2IP
       ;;
     25)
+      keepAliveServ
+      ;;
+    26)
       uninstall
       ;;
     0)

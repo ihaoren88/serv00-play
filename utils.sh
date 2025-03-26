@@ -18,6 +18,7 @@ red() {
   echo -e "${RED}$1${RESET}"
 }
 installpath="$HOME"
+baseurl="https://ss.fkj.pp.ua"
 
 checknezhaAgentAlive() {
   if ps aux | grep nezha-agent | grep -v "grep" >/dev/null; then
@@ -65,6 +66,7 @@ stopProc() {
     kill -9 $r
   fi
   echo "已停掉$procname!"
+  return 0
 }
 
 checkSingboxAlive() {
@@ -179,15 +181,15 @@ get_webip() {
   local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
 
   # 构造主机名称的数组
-  local hosts=("web${host_number}.serv00.com" "cache${host_number}.serv00.com")
+  local hosts=("web${host_number}.$(getDoMain)" "cache${host_number}.$(getDoMain)")
 
   # 初始化最终 IP 变量
-  local final_ip=""
+  local final_ip="$(devil vhost list | grep web | awk '{print $1}')"
 
   # 遍历主机名称数组
   for host in "${hosts[@]}"; do
     # 获取 API 返回的数据
-    local response=$(curl -s "https://ss.botai.us.kg/api/getip?host=$host")
+    local response=$(curl -s "${baseurl}/api/getip?host=$host")
 
     # 检查返回的结果是否包含 "not found"
     if [[ "$response" =~ "not found" ]]; then
@@ -197,7 +199,7 @@ get_webip() {
     # 提取第一个字段作为 IP，并检查第二个字段是否为 "Accessible"
     local ip=$(echo "$response" | awk -F "|" '{ if ($2 == "Accessible") print $1 }')
     # webxx.serv00.com域名对应的ip作为兜底ip
-    if [[ "$host" == "web${host_number}.serv00.com" ]]; then
+    if [[ "$host" == "web${host_number}.$(getDoMain)" ]]; then
       final_ip=$(echo "$response" | awk -F "|" '{print $1}')
     fi
 
@@ -219,15 +221,15 @@ get_ip() {
   local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
 
   # 构造主机名称的数组
-  local hosts=("cache${host_number}.serv00.com" "web${host_number}.serv00.com" "$hostname")
+  local hosts=("cache${host_number}.$(getDoMain)" "web${host_number}.$(getDoMain)" "$hostname")
 
   # 初始化最终 IP 变量
-  local final_ip=""
+  local final_ip="$(curl -s icanhazip.com)"
 
   # 遍历主机名称数组
   for host in "${hosts[@]}"; do
     # 获取 API 返回的数据
-    local response=$(curl -s "https://ss.botai.us.kg/api/getip?host=$host")
+    local response=$(curl -s "${baseurl}/api/getip?host=$host")
 
     # 检查返回的结果是否包含 "not found"
     if [[ "$response" =~ "not found" ]]; then
@@ -253,6 +255,30 @@ isServ00() {
   [[ $(hostname) == *"serv00"* ]]
 }
 
+getDoMain() {
+  if isServ00; then
+    echo -n "serv00.com"
+  else
+    echo -n "useruno.com"
+  fi
+}
+
+getUserDoMain() {
+  local proc=$1
+  local baseDomain=""
+  user="$(whoami)"
+  if isServ00; then
+    baseDomain="$user.serv00.net"
+  else
+    baseDomain="$user.useruno.com"
+  fi
+  if [[ -n "$proc" ]]; then
+    echo -n "$proc.$baseDomain"
+  else
+    echo -n "$baseDomain"
+  fi
+}
+
 #获取端口
 getPort() {
   local type=$1
@@ -269,7 +295,7 @@ getPort() {
     rt=$(devil port add $type random $opts)
     if [[ "$rt" =~ .*succesfully.*$ || "$rt" =~ .*Ok.*$ ]]; then
       loadPort
-      if [[ -n "$port_array["$key"]" ]]; then
+      if [[ -n "${port_array["$key"]}" ]]; then
         echo "${port_array["$key"]}"
       else
         echo "failed"
@@ -348,10 +374,16 @@ cleanPort() {
   return 0
 }
 
+ISIDR=1
+ISFILE=0
+ISVIP=1
+NOTVIP=0
 checkDownload() {
   local file=$1
-  local filegz="$file.gz"
   local is_dir=${2:-0}
+  local passwd=${3:-"fkjyyds666"}
+  local vipflag=${4:-0}
+  local filegz="$file.gz"
 
   if [[ $is_dir -eq 1 ]]; then
     filegz="$file.tar.gz"
@@ -360,7 +392,12 @@ checkDownload() {
   #检查并下载核心程序
   if [[ ! -e $file ]] || [[ $(file $file) == *"text"* ]]; then
     echo "正在下载 $file..."
-    url="https://gfg.fkj.pp.ua/app/serv00/$filegz?pwd=fkjyyds666"
+    if [[ $vipflag -eq 1 ]]; then
+      url="https://gfg.fkj.pp.ua/app/vip/$filegz?pwd=$passwd"
+    else
+      url="https://gfg.fkj.pp.ua/app/serv00/$filegz?pwd=$passwd"
+    fi
+    #echo "url:$url"
     curl -L -sS --max-time 20 -o $filegz "$url"
 
     if file $filegz | grep -q "text"; then
@@ -514,17 +551,79 @@ delete_all_domains() {
   done
 }
 
+download_from_net() {
+  local app=$1
+
+  case $app in
+  "alist")
+    download_from_github_release "AlistGo" "alist" "alist-freebsd-amd64.tar.gz"
+    ;;
+  "nezha-agent")
+    download_from_github_release "nezhahq" "agent" "nezha-agent_freebsd_amd64.zip"
+    ;;
+  "nezha-dashboard")
+    download_from_github_release "frankiejun" "freebsd-nezha" "dashboard.gz"
+    ;;
+  esac
+}
+
+check_update_from_net() {
+  local app=$1
+
+  case $app in
+  "alist")
+    local current_version=$(./alist version | grep "Version: v" | awk '{print $2}')
+    if ! check_from_github "AlistGo" "alist" "$current_version"; then
+      echo "未发现新版本!"
+      return 1
+    fi
+    download_from_github_release "AlistGo" "alist" "alist-freebsd-amd64.tar.gz"
+    ;;
+  "nezha-agent")
+    local current_version="v"$(./nezha-agent -v | awk '{print $3}')
+    if ! check_from_github "nezhahq" "agent" "$current_version"; then
+      echo "未发现新版本!"
+      return 1
+    fi
+    download_from_github_release "nezhahq" "agent" "nezha-agent_freebsd_amd64.zip"
+    ;;
+  "nezha-dashboard")
+    local current_version=$(./nezha-dashboard -v)
+    if ! check_from_github "frankiejun" "freebsd-nezha" "$current_version"; then
+      echo "未发现新版本!"
+      return 1
+    fi
+    download_from_github_release "frankiejun" "freebsd-nezha" "dashboard.gz"
+    ;;
+  esac
+}
+
+check_from_github() {
+  local user=$1
+  local repository=$2
+  local local_version="$3"
+  local url="https://github.com/${user}/${repository}"
+  local latestUrl="$url/releases/latest"
+
+  latest_version=$(curl -sL $latestUrl | sed -n 's/.*tag\/\(v[0-9.]*\).*/\1/p' | head -1)
+  #latest_version=$(curl -sL "https://api.github.com/repos/${user}/${repository}/releases/latest" | jq -r '.tag_name // empty')
+  if [[ "$local_version" != "$latest_version" ]]; then
+    echo "发现新版本: $latest_version，当前版本: $local_version, 正在更新..."
+    return 0
+  fi
+  return 1
+}
+
 download_from_github_release() {
   local user=$1
   local repository=$2
-  local package=$3
-  local zippackage="$package.zip"
+  local zippackage="$3"
 
   local url="https://github.com/${user}/${repository}"
   local latestUrl="$url/releases/latest"
 
   local latest_version=$(curl -sL $latestUrl | sed -n 's/.*tag\/\(v[0-9.]*\).*/\1/p' | head -1)
-
+  #latest_version=$(curl -sL "https://api.github.com/repos/${user}/${repository}/releases/latest" | jq -r '.tag_name // empty')
   local download_url="${url}/releases/download/$latest_version/$zippackage"
   curl -sL -o "$zippackage" "$download_url"
   if [[ ! -e "$zippackage" || -n $(file "$zippackage" | grep "text") ]]; then
@@ -532,12 +631,152 @@ download_from_github_release() {
     return 1
   fi
   # 原地解压缩
-  unzip -o "$zippackage" -d .
+  case "$zippackage" in
+  *.zip)
+    unzip -o "$zippackage" -d .
+    ;;
+  *.tar.gz | *.tgz)
+    tar -xzf "$zippackage"
+    ;;
+  *.tar.bz2 | *.tbz2)
+    tar -xjf "$zippackage"
+    ;;
+  *.tar.xz | *.txz)
+    tar -xJf "$zippackage"
+    ;;
+  *.gz)
+    gzip -d "$zippackage"
+    ;;
+  *.tar)
+    tar -xf "$zippackage"
+    ;;
+  *)
+    echo "不支持的文件格式: $zippackage"
+    return 1
+    ;;
+  esac
+
   if [[ $? -ne 0 ]]; then
     echo "解压 $zippackage 文件失败!"
     return 1
   fi
+
   rm -rf "$zippackage"
   echo "下载并解压 $zippackage 成功!"
   return 0
+}
+
+clean_all_domains() {
+  echo "正在清理域名..."
+  output=$(devil www list)
+  if echo "$output" | grep -q "No elements to display"; then
+    echo "没有发现在用域名."
+    return 0
+  fi
+  domains=($(echo "$output" | awk 'NF && NR>2 {print $1}'))
+
+  for domain in "${domains[@]}"; do
+    devil www del $domain --remove
+  done
+  echo "域名清理完毕!"
+}
+
+create_default_domain() {
+  echo "正在创建默认域名..."
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  devil www add $domain php
+  echo "默认域名创建成功!"
+}
+
+clean_all_dns() {
+  echo "正在清理DNS..."
+  output=$(devil dns list)
+  if echo "$output" | grep -q "No elements to display"; then
+    echo "没有发现在用DNS."
+    return 0
+  fi
+  domains=($(echo "$output" | awk 'NF && NR>2 {print $1}'))
+
+  for domain in "${domains[@]}"; do
+    devil dns del $domain
+  done
+  echo "DNS清理完毕!"
+}
+
+show_ip_status() {
+  localIPs=()
+  useIPs=()
+  local hostname=$(hostname)
+  local host_number=$(echo "$hostname" | awk -F'[s.]' '{print $2}')
+  local hosts=("cache${host_number}.$(getDoMain)" "web${host_number}.$(getDoMain)" "$hostname")
+
+  # 遍历主机名称数组
+  local i=0
+  for host in "${hosts[@]}"; do
+    ((i++))
+    # 获取 API 返回的数据
+    local response=$(curl -s "${baseurl}/api/getip?host=$host")
+
+    # 检查返回的结果是否包含 "not found"
+    if [[ "$response" =~ "not found" ]]; then
+      echo "未识别主机${host}, 请联系作者饭奇骏!"
+      return
+    fi
+    local ip=$(echo "$response" | awk -F "|" '{print $1 }')
+    local status=$(echo "$response" | awk -F "|" '{print $2 }')
+    localIPs+=("$ip")
+    if [[ "$status" == "Accessible" ]]; then
+      useIPs+=("$ip")
+    fi
+    printf "%-2d %-20s | %-15s | %-10s\n" $i "$host" "$ip" "$status"
+  done
+}
+
+stop_sing_box() {
+  cd ${installpath}/serv00-play/singbox
+  if [ -f killsing-box.sh ]; then
+    chmod 755 ./killsing-box.sh
+    ./killsing-box.sh
+  else
+    echo "请先安装serv00-play!!!"
+    return
+  fi
+  echo "已停掉sing-box!"
+}
+
+start_sing_box() {
+  cd ${installpath}/serv00-play/singbox
+
+  if [[ ! -e "singbox.json" ]]; then
+    red "请先进行配置!"
+    return 1
+  fi
+
+  if ! checkDownload "serv00sb"; then
+    return
+  fi
+  if ! checkDownload "cloudflared"; then
+    return
+  fi
+
+  if checkSingboxAlive; then
+    red "sing-box 已在运行，请勿重复操作!"
+    return 1
+  else #启动可能需要cloudflare，此处表示cloudflare和sb有一个不在线，所以干脆先杀掉再重启。
+    chmod 755 ./killsing-box.sh
+    ./killsing-box.sh
+  fi
+
+  if chmod +x start.sh && ! ./start.sh; then
+    red "sing-box启动失败！"
+    exit 1
+  fi
+  sleep 2
+  if checkProcAlive "serv00sb"; then
+    yellow "启动成功!"
+  else
+    red "启动失败!"
+  fi
+
 }
